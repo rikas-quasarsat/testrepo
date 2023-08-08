@@ -1,0 +1,377 @@
+# Test stage after publish for downstream pipeline to use downloaded firmware file
+stages:
+  - lint
+  - build
+  - publish
+  - test
+  - pages
+
+variables:
+  GIT_SUBMODULE_STRATEGY: recursive
+  GITLAB_PROJECT_ID: 37391460
+  XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+  VITIS_VERSION: "2022.2"
+  PERSONALITY: "cnic"
+  TARGET_ALVEO: "u55"
+  # we escape the $ for BASEDIR to allow evaluation later
+  CREATE_PRJ_SCRIPT_PATH: "$${BASEDIR}/designs/${PERSONALITY}/create_project.tcl"
+  VIVADO_BUILD_BASE_DIR: "./build"
+  PACKAGE_KRNL_SCRIPT_PATH: "$${BASEDIR}/designs/${PERSONALITY}/src/scripts/package_kernel.tcl"
+  GEN_XO_DIRECTORY: "$${BASEDIR}/designs/${PERSONALITY}/src/scripts"
+  GEN_XO_SCRIPT_PATH: "$GEN_XO_DIRECTORY/gen_xo.tcl"
+  VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/${TARGET_ALVEO}"
+  EXTRA_VPP_ARGS: "--user_ip_repo_paths $${BASEDIR}/pub-timeslave/hw/cores"
+  EXTRA_XSIM_DIR: ""
+  EXTRA_MODEL_DIR: ""
+  EXTRA_MATLAB_MODEL_DIR: ""
+  MAIN_BUILD_TAG: "TRUE"
+  EXTRA_DEVELOPER_TAG: "u55_builder"
+
+include:
+  # Alveo FPGA build common CI configuration
+  # Note: GitLab includes always grab the latest.
+  # This may not match the copy in our 'common' submodule!
+  - project: 'ska-telescope/low-cbf/ska-low-cbf-fw-common'
+    file: 'gitlab/build.yml'
+  # ref: ''
+  # SKA standard includes
+  # RAW artefact handling
+  - project: 'ska-telescope/templates-repository'
+    file: 'gitlab-ci/includes/raw.gitlab-ci.yml'
+  # Release management
+  - project: 'ska-telescope/templates-repository'
+    file: 'gitlab-ci/includes/release.gitlab-ci.yml'
+  # Docs pages
+  - project: 'ska-telescope/templates-repository'
+    file: 'gitlab-ci/includes/docs.gitlab-ci.yml'
+  # .post step finalisers eg: badges
+  - project: 'ska-telescope/templates-repository'
+    file: 'gitlab-ci/includes/finaliser.gitlab-ci.yml'
+
+raw-build:
+  # note: this is modifying a job imported from templates-repository!
+  needs:
+    - job: v++
+      optional: true  # v++ job doesn't always exist in pipeline
+    - job: v++ u50  # only upload to CAR if both targets succeed
+      optional: true
+      artifacts: false
+  variables:
+    BUILD_STRING: "CI CAR Package. Target Alveo: ${TARGET_ALVEO}. Pipeline ${CI_PIPELINE_ID} created at ${CI_PIPELINE_CREATED_AT}. Tag ${CI_COMMIT_TAG}. Commit ${CI_COMMIT_SHORT_SHA}."
+  before_script:
+    # we check if the build directory exists because v++ doesn't always run
+    - if [ -d build ]; then source common/scripts/util.sh; prepare_package_files raw/ska-low-cbf-fw-cnic-${TARGET_ALVEO} "$BUILD_STRING"; fi;
+
+####################################################################################################################
+# low_psi creation rules.
+.low_psi_rules: &low_psi_rules
+  # Do not build if 'docs' in commit title
+  - if: ($CI_COMMIT_TITLE =~ /docs/)
+    when: never
+  # merge request - 
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    when: always
+  # default - allow manual trigger but don't require it for pipeline success
+  - when: manual
+    allow_failure: true
+####################################################################################################################
+### Repeat the build jobs for the U50LV Alveo
+create project u50lv:
+  extends: create project
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+    VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/u50"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+fpga lint u50lv:
+  extends: fpga lint
+  needs:
+    - create project u50lv
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+    VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/u50"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+package kernel u50lv:
+  extends: package kernel
+  needs:
+    - job: create project u50lv
+      artifacts: true
+    - job: fpga lint u50lv
+      artifacts: false
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+    VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/u50"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+generate xo u50lv:
+  extends: generate xo
+  needs:
+    - package kernel u50lv
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+    VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/u50"
+    KERNEL_XML_PATH: "$GEN_XO_DIRECTORY/u50"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+v++ u50lv:
+  extends: v++
+  needs:
+    - generate xo u50lv
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+    VPP_SCRIPT_DIR: "designs/${PERSONALITY}/src/scripts/u50"
+    KERNEL_XML_PATH: "$GEN_XO_DIRECTORY/u50"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+publish dev package u50lv :
+  extends: publish dev package
+  needs:
+    - v++ u50lv
+  variables:
+    TARGET_ALVEO: "u50lv"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50lv_gen3x4_xdma_2_202010_1/xilinx_u50lv_gen3x4_xdma_2_202010_1.xpfm"
+
+####################################################################################################################
+### Repeat the build jobs for the U50 Alveo
+create project u50:
+  extends: create project
+  variables:
+    TARGET_ALVEO: "u50"
+    VITIS_VERSION: "2021.2"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+fpga lint u50:
+  extends: fpga lint
+  needs:
+    - create project u50
+  variables:
+    TARGET_ALVEO: "u50"
+    VITIS_VERSION: "2021.2"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+package kernel u50:
+  extends: package kernel
+  needs:
+    - job: create project u50
+      artifacts: true
+    - job: fpga lint u50
+      artifacts: false
+  variables:
+    TARGET_ALVEO: "u50"
+    VITIS_VERSION: "2021.2"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+generate xo u50:
+  extends: generate xo
+  needs:
+    - package kernel u50
+  variables:
+    TARGET_ALVEO: "u50"
+    VITIS_VERSION: "2021.2"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+v++ u50:
+  extends: v++
+  needs:
+    - generate xo u50
+  variables:
+    TARGET_ALVEO: "u50"
+    VITIS_VERSION: "2021.2"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+    EXTRA_DEVELOPER_TAG: "u50_builder"
+
+publish dev package u50:
+  extends: publish dev package
+  needs:
+    - v++ u50
+  variables:
+    TARGET_ALVEO: "u50"
+    XPFM: "/opt/xilinx/platforms/xilinx_u50_gen3x16_xdma_201920_3/xilinx_u50_gen3x16_xdma_201920_3.xpfm"
+
+####################################################################################################################
+### Framework for future ALVEO
+# create project u55_base_3:
+#   extends: create project
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+# fpga lint u55_base_3:
+#   extends: fpga lint
+#   needs:
+#     - create project u55_base_3
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+# package kernel u55_base_3:
+#   extends: package kernel
+#   needs:
+#     - job: create project u55_base_3
+#       artifacts: true
+#     - job: fpga lint u55_base_3
+#       artifacts: false
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+# generate xo u55_base_3:
+#   extends: generate xo
+#   needs:
+#     - package kernel u55_base_3
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+# v++ u55_base_3:
+#   extends: v++
+#   needs:
+#     - generate xo u55_base_3
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+# publish dev package u55_base_3:
+#   extends: publish dev package
+#   needs:
+#     - v++ u55_base_3
+#   variables:
+#     XPFM: "/opt/xilinx/platforms/xilinx_u55c_gen3x16_xdma_3_202210_1/xilinx_u55c_gen3x16_xdma_3_202210_1.xpfm"
+#     VITIS_VERSION: "2022.2"
+
+####################################################################################################################
+### Test jobs
+## U50 HiL, U50 connected to U50LV.
+hil u50 prep:
+  stage: test
+  rules:
+    - !reference [v++, rules]
+  tags:
+    - vitis-$VITIS_VERSION  
+  needs:
+    - v++ u50
+  variables:
+    BUILD_STRING: "Prep files for U50"
+  before_script:
+    # copy firmware files to a convenient location
+    - mkdir -p firmware_u50
+    - source common/scripts/util.sh
+    - prepare_package_files ./firmware_u50 "${BUILD_STRING}"
+  script:
+    - echo -e "U50 firmware packed"
+  artifacts:
+    paths:
+      - firmware_u50/    
+
+hil u50lv prep:
+  stage: test
+  rules:
+    - !reference [v++, rules]
+  tags:
+    - vitis-$VITIS_VERSION  
+  needs:
+    - v++ u50lv
+  variables:
+    BUILD_STRING: "Prep files for U50LV"
+  before_script:
+    # copy firmware files to a convenient location
+    - mkdir -p firmware_u50lv
+    - source common/scripts/util.sh
+    - prepare_package_files ./firmware_u50lv "${BUILD_STRING}"
+  script:
+    - echo -e "U50LV firmware packed"
+  artifacts:
+    paths:
+      - firmware_u50lv/    
+
+cnic-sw-u50-test:
+  stage: test 
+  tags:
+    - alveo-u50-u50lv
+  rules:
+    - !reference [v++, rules]
+  needs:
+    - hil u50 prep
+    - hil u50lv prep
+  before_script:
+    - mkdir -p venv
+    - python3 -m venv venv
+    - source venv/bin/activate
+    - source /opt/xilinx/xrt/setup.sh
+    # install latest release of CNIC SW to execute test
+    - pip3 install ska-low-cbf-sw-cnic --extra-index-url https://artefact.skao.int/repository/pypi-internal/simple
+  script:
+    - echo -e "🧪 \033[1;33mpcap multi-length packet Tx/Rx test\033[0m"
+    # U50 = 03, U50LV = 01
+    - cnic -d 0000:03:00.1 -f firmware_u50/cnic.xclbin -m "2048Ms:2048Mi:2048Ms:2048Mi" -- rx rx.pcap 128 10 > rx_stdout.txt 2> rx_stderr.txt &
+    - cnic -d 0000:01:00.1 -f firmware_u50lv/cnic.xclbin -m "2048Ms:2048Mi:2048Ms:2048Mi" -- tx tests/10_multi_length.pcap
+    - wait  # let Rx finish
+    - cat rx_stderr.txt
+    - cat rx_stdout.txt
+    # can't use compare_pcap as it needs the ports to all be the same
+    - test $(tcpdump -r rx.pcap | wc -l) -eq 10
+    - rm rx.pcap
+
+## U55 HiL, two U55 cards directly connected.
+cnic-sw-u55c-test:
+  stage: test 
+  tags:
+    - alveo-u55c-alveo-u55c
+  rules:
+    - !reference [v++, rules]
+  needs:
+    - v++
+  variables:
+    BUILD_STRING: "CI Temporary Package. Target Alveo: ${TARGET_ALVEO}. Pipeline ${CI_PIPELINE_ID} created at ${CI_PIPELINE_CREATED_AT}. Tag ${CI_COMMIT_TAG}. Commit ${CI_COMMIT_SHORT_SHA}."
+  before_script:
+    - mkdir -p venv
+    - python3 -m venv venv
+    - source venv/bin/activate
+    - source /opt/xilinx/xrt/setup.sh
+    # copy firmware files to a convenient location
+    - mkdir -p firmware
+    - source common/scripts/util.sh
+    - prepare_package_files ./firmware "${BUILD_STRING}"
+    # install latest release of CNIC SW to execute test
+    - pip3 install ska-low-cbf-sw-cnic --extra-index-url https://artefact.skao.int/repository/pypi-internal/simple
+  script:
+    - echo -e "🧪 \033[1;33mpcap multi-length packet Tx/Rx test\033[0m"
+    - cnic -d 0000:09:00.1 -f firmware/cnic.xclbin -m "4095Ms:4095Mi:4095Ms:4095Mi" -- rx rx.pcap 128 10 > rx_stdout.txt 2> rx_stderr.txt &
+    - cnic -d 0000:0a:00.1 -f firmware/cnic.xclbin -m "4095Ms:4095Mi:4095Ms:4095Mi" -- tx tests/10_multi_length.pcap
+    - wait  # let Rx finish
+    - cat rx_stderr.txt
+    - cat rx_stdout.txt
+    # can't use compare_pcap as it needs the ports to all be the same
+    - test $(tcpdump -r rx.pcap | wc -l) -eq 10
+    - rm rx.pcap
+    - echo -e "🧪 \033[1;33mVirtual Digitiser test\033[0m"
+    - cnic -d 0000:09:00.1 -f firmware/cnic.xclbin -m "4095Ms:4095Mi:4095Ms:4095Mi" -- rx rx.pcap 8306 1728 > rx_stdout.txt 2> rx_stderr.txt &
+    - cnic -d 0000:0a:00.1 -f firmware/cnic.xclbin -m "4095Ms:4095Mi:4095Ms:4095Mi" -e tests/transmit_vd.py
+    - wait  # let Rx finish
+    - cat rx_stderr.txt
+    - cat rx_stdout.txt
+    - test $(tcpdump -r rx.pcap | wc -l) -eq 1728
+    - rm rx.pcap
+
+psi-low-test:
+  stage: test
+  rules:
+    - *low_psi_rules
+  needs:
+    - publish dev package
+    - cnic-sw-u55c-test
+  trigger:
+    project: "ska-telescope/low-cbf/ska-low-cbf"
+  variables:
+    CNIC_FW_VERSION: ${CI_COMMIT_SHORT_SHA}
+    CNIC_FW_SOURCE: "gitlab"
